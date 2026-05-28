@@ -98,8 +98,10 @@ def search_recent_bounty_issues() -> list[dict]:
     """Issues with the Algora bounty label opened in the lookback window."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # GitHub now rejects search/issues queries that don't pin the type with
+    # ``is:issue`` or ``is:pull-request``.  We only want issues here.
     q = (
-        f'label:"{BOUNTY_LABEL}" state:open no:assignee '
+        f'is:issue label:"{BOUNTY_LABEL}" state:open no:assignee '
         f"created:>{cutoff_str}"
     )
     data = gh_request(
