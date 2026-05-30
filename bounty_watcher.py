@@ -174,7 +174,17 @@ def main() -> int:
     state = load_state()
     seen_ids = set(state.get("seen", []))
 
-    issues = search_recent_bounty_issues()
+    try:
+        issues = search_recent_bounty_issues()
+    except urllib.error.HTTPError as exc:
+        # GitHub occasionally returns 403/429 on the search API under
+        # secondary rate limits, especially right after a manual dispatch.
+        # Treat these as transient: log, skip this tick, let the next
+        # cron pick up where we left off.
+        if exc.code in (403, 429):
+            print(f"search rate-limited ({exc.code}); skipping this tick", flush=True)
+            return 0
+        raise
     print(f"candidate issues: {len(issues)}", flush=True)
 
     sent_any = False
