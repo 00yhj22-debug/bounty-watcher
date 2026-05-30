@@ -28,14 +28,24 @@ BLACKLIST_ORGS = {
 ALLOWED_LANGUAGES = {"Python", "TypeScript", "JavaScript", "Go", "Rust"}
 
 # Star floor to keep tiny "issue farm" repos out of the alert stream.
-MIN_STARS = 200
+# Overridable so we can tune without a redeploy.
+MIN_STARS = int(os.environ.get("MIN_STARS", "200"))
 
-# Algora's standard bounty label (with the diamond emoji).
-BOUNTY_LABEL = "💎 Bounty"
+# Bounty labels we watch.  Algora uses "💎 Bounty"; Polar.sh uses "Polar".
+# The cron runs one search per label and deduplicates results by issue id.
+# Override with the BOUNTY_LABELS env var (comma-separated) to widen or
+# narrow the funnel without code changes.
+DEFAULT_LABELS = ("💎 Bounty", "Polar")
+BOUNTY_LABELS: tuple[str, ...] = tuple(
+    label.strip()
+    for label in os.environ.get("BOUNTY_LABELS", ",".join(DEFAULT_LABELS)).split(",")
+    if label.strip()
+)
 
 # How far back to look on each tick — generous because GitHub Actions cron
-# can slip 10–15 minutes during peak hours.
-LOOKBACK_HOURS = 3
+# can slip 10–15 minutes during peak hours.  Overridable so the operator
+# can dial in a tighter window when the cron is healthy.
+LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "3"))
 
 USER_AGENT = "bounty-watcher (github.com/00yhj22-debug/bounty-watcher)"
 
@@ -95,20 +105,31 @@ def save_state(state: dict) -> None:
 
 
 def search_recent_bounty_issues() -> list[dict]:
-    """Issues with the Algora bounty label opened in the lookback window."""
+    """Issues with any watched bounty label opened in the lookback window.
+
+    We issue one search per label rather than OR-ing them into a single
+    query: GitHub's qualifier OR-ing is fiddly with quoted strings and
+    emoji, and the per-label search count is cheap.  Results are
+    deduplicated here so the caller never sees the same issue twice.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
-    # GitHub now rejects search/issues queries that don't pin the type with
-    # ``is:issue`` or ``is:pull-request``.  We only want issues here.
-    q = (
-        f'is:issue label:"{BOUNTY_LABEL}" state:open no:assignee '
-        f"created:>{cutoff_str}"
-    )
-    data = gh_request(
-        "https://api.github.com/search/issues",
-        {"q": q, "sort": "created", "order": "desc", "per_page": "30"},
-    )
-    return data.get("items", []) or []
+
+    found: dict[int, dict] = {}
+    for label in BOUNTY_LABELS:
+        # GitHub now rejects search/issues queries that don't pin the type
+        # with ``is:issue`` or ``is:pull-request``.  We only want issues.
+        q = (
+            f'is:issue label:"{label}" state:open no:assignee '
+            f"created:>{cutoff_str}"
+        )
+        data = gh_request(
+            "https://api.github.com/search/issues",
+            {"q": q, "sort": "created", "order": "desc", "per_page": "30"},
+        )
+        for item in data.get("items", []) or []:
+            found.setdefault(item["id"], item)
+    return list(found.values())
 
 
 def repo_meets_bar(repo: dict) -> bool:
@@ -122,12 +143,26 @@ def repo_meets_bar(repo: dict) -> bool:
     return True
 
 
+def _source_for(label_names: list[str]) -> str:
+    """Best-effort guess of which bounty platform posted the issue.
+
+    The label set is short so the linear scan is fine.
+    """
+    joined = " ".join(label_names).lower()
+    if "polar" in joined:
+        return "Polar"
+    if "💎" in joined or "bounty" in joined or "algora" in joined:
+        return "Algora"
+    return "bounty"
+
+
 def format_alert(issue: dict, repo: dict) -> str:
     labels = [label["name"] for label in issue.get("labels", [])]
     amount = parse_amount(labels)
     amount_str = f"${amount}" if amount is not None else "?"
+    source = _source_for(labels)
     return (
-        f"💎 New bounty {amount_str}\n"
+        f"💎 New {source} bounty {amount_str}\n"
         f"{repo['full_name']} ({repo['stargazers_count']}⭐, "
         f"{repo.get('language') or '?'})\n"
         f"{issue['title']}\n"
