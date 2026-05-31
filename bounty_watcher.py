@@ -47,6 +47,10 @@ BOUNTY_LABELS: tuple[str, ...] = tuple(
 # can dial in a tighter window when the cron is healthy.
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "3"))
 
+# Send a daily summary to Telegram so the operator knows the cron is alive
+# even when no bounties are found.  Set HEARTBEAT=off to disable.
+HEARTBEAT_ENABLED = os.environ.get("HEARTBEAT", "on").lower() != "off"
+
 USER_AGENT = "bounty-watcher (github.com/00yhj22-debug/bounty-watcher)"
 
 
@@ -94,8 +98,16 @@ def parse_amount(labels: list[str]) -> int | None:
 
 def load_state() -> dict:
     if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"seen": []}
+        state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    else:
+        state = {"seen": []}
+    # Forward-compat shims: older state.json files may be missing the
+    # heartbeat counters.  Default them in so the rest of the script can
+    # read/write without ``KeyError`` guards.
+    state.setdefault("candidates_total", 0)
+    state.setdefault("alerts_total", 0)
+    state.setdefault("last_heartbeat_date", "")
+    return state
 
 
 def save_state(state: dict) -> None:
@@ -186,7 +198,9 @@ def main() -> int:
             return 0
         raise
     print(f"candidate issues: {len(issues)}", flush=True)
+    state["candidates_total"] += len(issues)
 
+    alerts_this_run = 0
     sent_any = False
     for issue in issues:
         issue_id = issue["id"]
@@ -223,9 +237,40 @@ def main() -> int:
         print(f"alerted: {repo['full_name']}#{issue['number']}", flush=True)
         seen_ids.add(issue_id)
         sent_any = True
+        alerts_this_run += 1
+
+    state["alerts_total"] += alerts_this_run
 
     # Cap the seen list so the state file stays small.
     state["seen"] = sorted(seen_ids)[-500:]
+
+    # Daily heartbeat: once per UTC day, report the rolling counters so the
+    # operator knows the cron is alive even when nothing matches the filter.
+    # The first run on a fresh deploy just stamps the date and stays silent —
+    # the first real heartbeat fires on the next UTC day.
+    if HEARTBEAT_ENABLED:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        last = state["last_heartbeat_date"]
+        if last and last != today:
+            window = f"{last} → {today}"
+            message = (
+                f"📊 Watcher heartbeat ({window})\n"
+                f"candidates seen: {state['candidates_total']}\n"
+                f"alerts sent: {state['alerts_total']}\n"
+                f"status: healthy"
+            )
+            try:
+                telegram_send(message)
+                print(f"heartbeat sent for {window}", flush=True)
+            except Exception as exc:
+                print(f"heartbeat send failed: {exc}", file=sys.stderr)
+            # Reset rolling counters regardless of telegram success — the
+            # alternative is the same heartbeat being retried every 30 min
+            # for a whole day on a bad telegram token.
+            state["candidates_total"] = 0
+            state["alerts_total"] = 0
+        state["last_heartbeat_date"] = today
+
     save_state(state)
 
     if not sent_any:

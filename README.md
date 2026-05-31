@@ -22,6 +22,11 @@ The three filter knobs can be overridden via environment variables on the workfl
 | `BOUNTY_LABELS`  | `💎 Bounty,Polar`| Comma-separated label list to search           |
 | `MIN_STARS`      | `200`            | Reject repos under this star count             |
 | `LOOKBACK_HOURS` | `3`              | How far back to look on each tick              |
+| `HEARTBEAT`      | `on`             | Once-per-day Telegram summary; set `off` to silence |
+
+## Daily heartbeat
+
+The first cron run on each new UTC day sends a short summary message — total candidates seen and alerts sent since the previous heartbeat — so the bot's absence stays distinguishable from a quiet bounty market. Rolling counters reset after the message goes out.
 
 ## Secrets used
 
