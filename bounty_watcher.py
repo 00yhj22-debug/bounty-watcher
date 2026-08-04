@@ -31,11 +31,18 @@ ALLOWED_LANGUAGES = {"Python", "TypeScript", "JavaScript", "Go", "Rust"}
 # Overridable so we can tune without a redeploy.
 MIN_STARS = int(os.environ.get("MIN_STARS", "200"))
 
-# Bounty labels we watch.  Algora uses "💎 Bounty"; Polar.sh uses "Polar".
+# Bounty labels we watch.  Algora uses "💎 Bounty".
+#
+# "Polar" (Polar.sh) was dropped on 2026-08-04: the word is common enough that
+# it matched unrelated issues -- e.g. ACEsuit/mace#1592 uses a "polar" label for
+# electrostatic polarizability, which cleared every other filter and produced the
+# watcher's only alert to date.  Polar.sh never yielded a real listing, so the
+# label costs false positives and buys nothing.  Re-add via BOUNTY_LABELS if that
+# changes.
 # The cron runs one search per label and deduplicates results by issue id.
 # Override with the BOUNTY_LABELS env var (comma-separated) to widen or
 # narrow the funnel without code changes.
-DEFAULT_LABELS = ("💎 Bounty", "Polar")
+DEFAULT_LABELS = ("💎 Bounty",)
 BOUNTY_LABELS: tuple[str, ...] = tuple(
     label.strip()
     for label in os.environ.get("BOUNTY_LABELS", ",".join(DEFAULT_LABELS)).split(",")
